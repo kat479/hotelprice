@@ -1,0 +1,114 @@
+name: Daily Hotel Price Check
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # 01:00 UTC = 10:00 JST every day
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write       # needed to commit CSVs back to the repo
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python ──────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ── 3. Dependencies ────────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install playwright
+
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
+
+      # ── 4. Scrape – all 3 portals ──────────────────────────────────────────
+      - name: Scrape Booking.com
+        run: |
+          python hotel_price_scraper.py \
+            ${{ env.CHECKIN }} ${{ env.CHECKOUT }} \
+            --portal booking \
+            --output data/booking_${{ env.CHECKIN }}_${{ env.CHECKOUT }}.csv
+        env:
+          CHECKIN:  "2026-10-27"
+          CHECKOUT: "2026-11-10"
+
+      - name: Scrape Agoda
+        run: |
+          python hotel_price_scraper.py \
+            ${{ env.CHECKIN }} ${{ env.CHECKOUT }} \
+            --portal agoda \
+            --output data/agoda_${{ env.CHECKIN }}_${{ env.CHECKOUT }}.csv
+        env:
+          CHECKIN:  "2026-10-27"
+          CHECKOUT: "2026-11-10"
+
+      - name: Scrape Hotels.com
+        run: |
+          python hotel_price_scraper.py \
+            ${{ env.CHECKIN }} ${{ env.CHECKOUT }} \
+            --portal hotels_com \
+            --output data/hotels_com_${{ env.CHECKIN }}_${{ env.CHECKOUT }}.csv
+        env:
+          CHECKIN:  "2026-10-27"
+          CHECKOUT: "2026-11-10"
+
+      # ── 5. Append today's rows to a master CSV ────────────────────────────
+      - name: Merge into master CSV
+        run: |
+          python - <<'EOF'
+          import csv, glob, os
+          from datetime import date
+
+          master_path = "data/all_prices.csv"
+          fields = [
+              "hotel", "portal", "checkin", "checkout", "nights",
+              "price_per_night_JPY", "total_price_JPY", "currency",
+              "status", "scraped_at", "url",
+          ]
+
+          # Collect today's rows from the three fresh CSVs
+          new_rows = []
+          for path in sorted(glob.glob("data/booking_*.csv") +
+                             glob.glob("data/agoda_*.csv") +
+                             glob.glob("data/hotels_com_*.csv")):
+              with open(path, newline="", encoding="utf-8") as f:
+                  new_rows.extend(list(csv.DictReader(f)))
+
+          # Read existing master (if present)
+          existing = []
+          if os.path.exists(master_path):
+              with open(master_path, newline="", encoding="utf-8") as f:
+                  existing = list(csv.DictReader(f))
+
+          # Write combined
+          with open(master_path, "w", newline="", encoding="utf-8") as f:
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader()
+              w.writerows(existing)
+              w.writerows(new_rows)
+
+          print(f"Master CSV: {len(existing)} existing + {len(new_rows)} new = "
+                f"{len(existing)+len(new_rows)} total rows")
+          EOF
+
+      # ── 6. Commit results ─────────────────────────────────────────────────
+      - name: Commit & push CSVs
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          # Only commit if there are changes
+          git diff --cached --quiet || \
+            git commit -m "chore: hotel prices $(date -u '+%Y-%m-%d')"
+          git push
