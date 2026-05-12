@@ -27,7 +27,7 @@ jobs:
 
       # ── 3. Dependencies ────────────────────────────────────────────────────
       - name: Install Python dependencies
-        run: pip install playwright
+        run: pip install -r requirements.txt
 
       - name: Install Playwright browser
         run: playwright install chromium --with-deps
